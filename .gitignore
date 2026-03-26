@@ -1,5 +1,6 @@
 Builds/
 DerivedData/
+JuceLibraryCode/
 .DS_Store
 *.xcworkspace
 *.xcuserdata

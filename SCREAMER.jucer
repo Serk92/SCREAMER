@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
 <JUCERPROJECT id="loObry" name="SCREAMER" projectType="audioplug" useAppConfig="0"
-              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1">
+              addUsingNamespaceToJuceHeader="0" jucerFormatVersion="1" cppLanguageStandard="17">
   <MAINGROUP id="ef8WQO" name="SCREAMER">
     <GROUP id="{4211D481-D1E9-8102-4F3C-770F6AD1B3F5}" name="Source">
       <FILE id="uHPLNO" name="PluginProcessor.cpp" compile="1" resource="0"

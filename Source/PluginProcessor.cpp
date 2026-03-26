@@ -25,10 +25,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout SCREAMERAudioProcessor::crea
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
-        "drive",
-        "Drive",
-        juce::NormalisableRange<float> (1.0f, 20.0f, 0.1f),
-        1.0f));
+                                                                  juce::ParameterID{"drive", 1},
+                                                                  "Drive",
+                                                                  juce::NormalisableRange<float> (1.0f, 20.0f, 0.1f),
+                                                                  1.0f));
 
     return { params.begin(), params.end() };
 }
