@@ -149,10 +149,6 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
 }
 
-bool SCREAMERAudioProcessor::hasEditor() const
-{
-    return true;
-}
 
 juce::AudioProcessorEditor* SCREAMERAudioProcessor::createEditor()
 {
