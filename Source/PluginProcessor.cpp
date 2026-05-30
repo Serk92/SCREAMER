@@ -143,8 +143,12 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
         {
-            const float x = channelData[sample] * drive;
-            channelData[sample] = std::tanh (x);
+            const float driven = channelData[sample] * drive;
+            const float distorted = std::tanh (driven);
+            const float output = distorted / drive;
+            
+            
+            channelData[sample] = output;
         }
     }
 }
