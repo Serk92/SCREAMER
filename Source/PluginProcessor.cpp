@@ -29,6 +29,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout SCREAMERAudioProcessor::crea
                                                                   "Drive",
                                                                   juce::NormalisableRange<float> (1.0f, 20.0f, 0.1f),
                                                                   1.0f));
+    params.push_back(std::make_unique<juce::AudioParameterChoice>(
+        "mode",
+        "Mode",
+        juce::StringArray { "Warm", "Heavy", "Extreme" },
+        1
+    ));
 
     return { params.begin(), params.end() };
 }
@@ -130,6 +136,11 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
+    
+    auto* modeParam = apvts.getRawParameterValue("mode");
+    int mode = 1; //Default heavy
+    if (modeParam != nullptr)
+        mode = static_cast<int>(modeParam->load());
 
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
@@ -143,11 +154,27 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
         {
-            const float driven = channelData[sample] * drive * 20.0f;
-            const float distorted = std::tanh (driven);
-            const float output = distorted * 0.3f;
-            
-            
+            const float input = channelData[sample];
+
+            float output = input;
+
+            if (mode == 0) // Warm
+            {
+                const float preGain = drive * 3.0f;
+                output = std::tanh(input * preGain) * 0.8f;
+            }
+            else if (mode == 1) // Heavy
+            {
+                const float preGain = drive * 10.0f;
+                output = std::tanh(input * preGain) * 0.5f;
+            }
+            else if (mode == 2) // Extreme
+            {
+                const float preGain = drive * 25.0f;
+                const float clipped = juce::jlimit(-1.0f, 1.0f, input * preGain);
+                output = clipped * 0.3f;
+            }
+
             channelData[sample] = output;
         }
     }

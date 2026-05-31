@@ -41,4 +41,11 @@ public:
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SCREAMERAudioProcessor)
+    
+    enum class DistortionMode
+    {
+        Warm = 0,
+        Heavy,
+        Extreme
+    };
 };
