@@ -14,7 +14,8 @@
 //==============================================================================
 /**
 */
-class SCREAMERAudioProcessorEditor  : public juce::AudioProcessorEditor
+class SCREAMERAudioProcessorEditor  : public juce::AudioProcessorEditor,
+                                      private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     SCREAMERAudioProcessorEditor (SCREAMERAudioProcessor&);
@@ -25,11 +26,20 @@ public:
     void resized() override;
 
 private:
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void setModeIndex (int index);
+    void updateModeButtonStates();
+
     SCREAMERAudioProcessor& audioProcessor;
-    
+
     juce::Slider driveSlider;
     juce::Label driveLabel;
-    
+
+    juce::Label modeLabel;
+    juce::TextButton warmButton   { "Warm" };
+    juce::TextButton heavyButton  { "Heavy" };
+    juce::TextButton extremeButton { "Extreme" };
+
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<SliderAttachment> driveAttachment;
 
