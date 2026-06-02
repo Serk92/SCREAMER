@@ -100,10 +100,17 @@ void SCREAMERAudioProcessor::changeProgramName (int index, const juce::String& n
 
 void SCREAMERAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    juce::ignoreUnused (samplesPerBlock);
+
+    outputFade.reset (sampleRate, fadeInLengthSeconds);
+    outputFade.setCurrentAndTargetValue (0.0f);
+    outputFade.setTargetValue (1.0f);
+    wasSuspendedLastBlock = false;
 }
 
 void SCREAMERAudioProcessor::releaseResources()
 {
+    outputFade.setCurrentAndTargetValue (0.0f);
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -143,37 +150,53 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
         buffer.clear (i, 0, buffer.getNumSamples());
 
+    if (isSuspended())
+    {
+        wasSuspendedLastBlock = true;
+        return;
+    }
+
+    if (wasSuspendedLastBlock)
+    {
+        outputFade.setCurrentAndTargetValue (0.0f);
+        outputFade.setTargetValue (1.0f);
+        wasSuspendedLastBlock = false;
+    }
+
     auto* driveParam = apvts.getRawParameterValue ("drive");
     const float drive = driveParam != nullptr ? driveParam->load() : 1.0f;
 
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
-    {
-        auto* channelData = buffer.getWritePointer (channel);
+    const int numSamples = buffer.getNumSamples();
 
-        for (int sample = 0; sample < buffer.getNumSamples(); ++sample)
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        const float fade = outputFade.getNextValue();
+
+        for (int channel = 0; channel < totalNumInputChannels; ++channel)
         {
+            auto* channelData = buffer.getWritePointer (channel);
             const float input = channelData[sample];
 
-            float output = input;
+            float wet = input;
 
             if (mode == 0) // Warm
             {
                 const float preGain = drive * 3.0f;
-                output = std::tanh(input * preGain) * 0.8f;
+                wet = std::tanh (input * preGain) * 0.8f;
             }
             else if (mode == 1) // Heavy
             {
                 const float preGain = drive * 10.0f;
-                output = std::tanh(input * preGain) * 0.5f;
+                wet = std::tanh (input * preGain) * 0.5f;
             }
             else if (mode == 2) // Extreme
             {
                 const float preGain = drive * 25.0f;
-                const float clipped = juce::jlimit(-1.0f, 1.0f, input * preGain);
-                output = clipped * 0.3f;
+                const float clipped = juce::jlimit (-1.0f, 1.0f, input * preGain);
+                wet = clipped * 0.3f;
             }
 
-            channelData[sample] = output;
+            channelData[sample] = input + fade * (wet - input);
         }
     }
 }

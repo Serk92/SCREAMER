@@ -40,12 +40,10 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
+    static constexpr double fadeInLengthSeconds = 0.03;
+
+    juce::SmoothedValue<float> outputFade;
+    bool wasSuspendedLastBlock = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SCREAMERAudioProcessor)
-    
-    enum class DistortionMode
-    {
-        Warm = 0,
-        Heavy,
-        Extreme
-    };
 };
