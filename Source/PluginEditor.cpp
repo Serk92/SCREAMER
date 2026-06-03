@@ -11,31 +11,37 @@
 
 namespace
 {
-    constexpr int defaultEditorWidth  = 720;
-    constexpr int defaultEditorHeight = 320;
-    constexpr int minEditorWidth      = 560;
-    constexpr int minEditorHeight     = 240;
+    constexpr int backgroundNativeWidth  = 693;
+    constexpr int backgroundNativeHeight = 374;
+    constexpr float leftPanelWidthRatio  = 172.0f / 693.0f;
 
-    constexpr float leftPanelWidthRatio  = 0.32f;
-    constexpr float outerBorderThickness = 4.0f;
     constexpr float innerPadding         = 10.0f;
     constexpr float modeButtonRowRatio   = 0.16f;
 
     constexpr float gainSectionHeightRatio = 0.54f;
     constexpr float mixSectionHeightRatio  = 0.34f;
     constexpr float sectionGapHeightRatio  = 0.08f;
-    constexpr float mixKnobScale           = 0.68f;
+    constexpr float mixKnobScale           = 0.748f;
 
-    const juce::Colour backgroundColour    { 0xff0e0e0e };
-    const juce::Colour panelBorderColour   { 0xffe8a020 };
-    const juce::Colour labelTextColour     { 0xffd8d8d8 };
-    const juce::Colour displayGridColour   { 0xff2a2a2a };
-    const juce::Colour displayCurveColour  { 0xffe8a020 };
+    const juce::Colour labelTextColour    { 0xffd8d8d8 };
+    const juce::Colour displayGridColour  { 0xff2a2a2a };
+    const juce::Colour displayCurveColour { 0xffe8a020 };
+    const juce::Colour activeButtonText   { 0xffffb040 };
+    const juce::Colour inactiveButtonText { 0xff8a6030 };
 
-    void setupRotarySlider (juce::Slider& slider)
+    juce::Image loadImageFromBinary (const char* data, int size)
+    {
+        return juce::ImageCache::getFromMemory (data, size);
+    }
+
+    void setupRotarySlider (juce::Slider& slider, juce::LookAndFeel& lookAndFeel)
     {
         slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        slider.setLookAndFeel (&lookAndFeel);
+        slider.setColour (juce::Slider::rotarySliderFillColourId, juce::Colours::transparentBlack);
+        slider.setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colours::transparentBlack);
+        slider.setColour (juce::Slider::thumbColourId, juce::Colours::transparentBlack);
     }
 
     void setupModeButton (juce::TextButton& button,
@@ -62,112 +68,83 @@ namespace
         const int diameter = juce::jmax (32, juce::roundToInt ((float) maxDiameter * knobDiameterScale));
         knob.setBounds (section.withSizeKeepingCentre (diameter, diameter));
     }
+
+    juce::Font knobLabelFont (float height)
+    {
+        return juce::Font (juce::FontOptions().withHeight (height).withStyle ("Bold"));
+    }
 }
 
 //==============================================================================
-void ScreamerModeButtonLookAndFeel::drawButtonBackground (juce::Graphics& g,
-                                                           juce::Button& button,
-                                                           const juce::Colour&,
-                                                           bool,
-                                                           bool isDown)
+void ScreamerImageKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
+                                                      int x,
+                                                      int y,
+                                                      int width,
+                                                      int height,
+                                                      float sliderPosProportional,
+                                                      float rotaryStartAngle,
+                                                      float rotaryEndAngle,
+                                                      juce::Slider&)
 {
-    auto bounds = button.getLocalBounds().toFloat().reduced (1.5f, 1.0f);
-    const float corner = 5.0f;
+    if (! knobImage.isValid())
+        return;
+
+    auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height);
+    const auto centre = bounds.getCentre();
+
+    const float sliderAngle = rotaryStartAngle
+                              + sliderPosProportional * (rotaryEndAngle - rotaryStartAngle);
+
+    // GAIN.png indicator is at 12 o'clock; align it to the slider arc angle.
+    const float rotation = sliderAngle + juce::MathConstants<float>::halfPi;
+
+    g.saveState();
+    g.addTransform (juce::AffineTransform::rotation (rotation, centre.x, centre.y));
+
+    g.drawImage (knobImage,
+                 bounds.getX(), bounds.getY(),
+                 bounds.getWidth(), bounds.getHeight(),
+                 0, 0, knobImage.getWidth(), knobImage.getHeight());
+
+    g.restoreState();
+}
+
+//==============================================================================
+void ScreamerImageButtonLookAndFeel::drawButtonBackground (juce::Graphics& g,
+                                                            juce::Button& button,
+                                                            const juce::Colour&,
+                                                            bool,
+                                                            bool isDown)
+{
+    if (! buttonImage.isValid())
+        return;
+
+    auto bounds = button.getLocalBounds().toFloat();
     const bool isOn = button.getToggleState();
 
-    if (isOn)
-    {
-        for (int i = 3; i >= 1; --i)
-        {
-            const float expand = (float) i * 1.5f;
-            g.setColour (panelBorderColour.withAlpha (0.07f * (float) i));
-            g.drawRoundedRectangle (bounds.expanded (expand), corner + 1.0f, 1.2f);
-        }
-    }
-
-    if (! isDown)
-    {
-        g.setColour (juce::Colours::black.withAlpha (0.55f));
-        g.fillRoundedRectangle (bounds.translated (0.0f, 2.0f), corner);
-    }
-
-    const juce::Colour topFill = isDown ? juce::Colour (0xff161616)
-                            : (isOn ? juce::Colour (0xff3a3020) : juce::Colour (0xff2c2c2c));
-    const juce::Colour bottomFill = isDown ? juce::Colour (0xff080808)
-                               : (isOn ? juce::Colour (0xff16120c) : juce::Colour (0xff121212));
-
-    juce::ColourGradient faceGradient (topFill,
-                                       bounds.getCentreX(), bounds.getY(),
-                                       bottomFill,
-                                       bounds.getCentreX(), bounds.getBottom(),
-                                       false);
-    g.setGradientFill (faceGradient);
-    g.fillRoundedRectangle (bounds, corner);
-
-    g.setColour (juce::Colours::white.withAlpha (isOn ? 0.10f : 0.06f));
-    g.drawLine (bounds.getX() + corner,
-                bounds.getY() + 1.0f,
-                bounds.getRight() - corner,
-                bounds.getY() + 1.0f,
-                1.0f);
-
-    g.setColour (juce::Colours::black.withAlpha (0.45f));
-    g.drawLine (bounds.getX() + corner,
-                bounds.getBottom() - 1.0f,
-                bounds.getRight() - corner,
-                bounds.getBottom() - 1.0f,
-                1.0f);
+    g.setOpacity (isOn ? 1.0f : (isDown ? 0.75f : 0.55f));
+    g.drawImage (buttonImage, bounds);
+    g.setOpacity (1.0f);
 
     if (isOn)
     {
-        g.setColour (panelBorderColour.withAlpha (0.95f));
-        g.drawRoundedRectangle (bounds.reduced (0.5f), corner, 1.8f);
-
-        g.setColour (panelBorderColour.withAlpha (0.25f));
-        g.drawRoundedRectangle (bounds.reduced (2.0f), corner - 1.0f, 1.0f);
-    }
-    else
-    {
-        g.setColour (juce::Colour (0xff2a2218).withAlpha (0.7f));
-        g.drawRoundedRectangle (bounds.reduced (0.5f), corner, 1.0f);
+        g.setColour (juce::Colour (0xffff9020).withAlpha (0.12f));
+        g.fillRoundedRectangle (bounds, 4.0f);
     }
 }
 
-void ScreamerModeButtonLookAndFeel::drawButtonText (juce::Graphics& g,
-                                                    juce::TextButton& button,
-                                                    bool,
-                                                    bool)
+void ScreamerImageButtonLookAndFeel::drawButtonText (juce::Graphics& g,
+                                                      juce::TextButton& button,
+                                                      bool,
+                                                      bool)
 {
     const bool isOn = button.getToggleState();
-    const auto text = button.getButtonText();
-    auto textArea = button.getLocalBounds().toFloat();
-
     g.setFont (juce::Font (juce::FontOptions().withHeight (13.0f).withStyle ("Bold")));
-
-    if (isOn)
-    {
-        const juce::Point<float> glowOffsets[] {
-            { 0.0f, 0.0f }, { 0.0f, -1.0f }, { 0.0f, 1.0f },
-            { -1.0f, 0.0f }, { 1.0f, 0.0f }, { 0.0f, -2.0f }, { 0.0f, 2.0f }
-        };
-
-        for (auto offset : glowOffsets)
-        {
-            g.setColour (juce::Colour (0xffff9020).withAlpha (0.22f));
-            g.drawText (text,
-                        textArea.translated (offset.x, offset.y),
-                        juce::Justification::centred,
-                        false);
-        }
-
-        g.setColour (juce::Colour (0xffffb040));
-    }
-    else
-    {
-        g.setColour (juce::Colour (0xff6a4828));
-    }
-
-    g.drawText (text, textArea, juce::Justification::centred, false);
+    g.setColour (isOn ? activeButtonText : inactiveButtonText);
+    g.drawText (button.getButtonText(),
+                button.getLocalBounds(),
+                juce::Justification::centred,
+                false);
 }
 
 //==============================================================================
@@ -231,11 +208,8 @@ void DisplayPanel::drawTransferCurve (juce::Graphics& g, juce::Rectangle<float> 
 void DisplayPanel::paint (juce::Graphics& g)
 {
     auto bounds = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xff141414));
+    g.setColour (juce::Colour (0x88000000));
     g.fillRoundedRectangle (bounds, 4.0f);
-
-    g.setColour (panelBorderColour);
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 4.0f, 1.5f);
 
     auto plotArea = bounds.reduced (14.0f, 12.0f);
     plotArea.removeFromBottom (16.0f);
@@ -248,18 +222,30 @@ void DisplayPanel::paint (juce::Graphics& g)
 SCREAMERAudioProcessorEditor::SCREAMERAudioProcessorEditor (SCREAMERAudioProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p)
 {
-    setResizable (true, true);
-    setResizeLimits (minEditorWidth, minEditorHeight, 1200, 520);
-    setSize (defaultEditorWidth, defaultEditorHeight);
+    loadUiAssets();
 
-    setupRotarySlider (gainSlider);
+    gainKnobLookAndFeel.setKnobImage (knobImage);
+    mixKnobLookAndFeel.setKnobImage (knobImage);
+    modeButtonLookAndFeel.setButtonImage (buttonImage);
+
+    const int editorWidth  = backgroundImage.isValid() ? backgroundImage.getWidth()  : backgroundNativeWidth;
+    const int editorHeight = backgroundImage.isValid() ? backgroundImage.getHeight() : backgroundNativeHeight;
+
+    setResizable (true, true);
+    setResizeLimits (juce::roundToInt ((float) editorWidth * 0.8f),
+                     juce::roundToInt ((float) editorHeight * 0.8f),
+                     editorWidth * 2,
+                     editorHeight * 2);
+    setSize (editorWidth, editorHeight);
+
+    setupRotarySlider (gainSlider, gainKnobLookAndFeel);
     gainSlider.setRange (1.0, 20.0, 0.1);
     addAndMakeVisible (gainSlider);
 
     gainLabel.setText ("GAIN", juce::dontSendNotification);
     gainLabel.setJustificationType (juce::Justification::centred);
     gainLabel.setColour (juce::Label::textColourId, labelTextColour);
-    gainLabel.setFont (juce::Font (juce::FontOptions().withHeight (12.0f).withStyle ("Bold")));
+    gainLabel.setFont (knobLabelFont (12.0f));
     addAndMakeVisible (gainLabel);
 
     driveAttachment = std::make_unique<SliderAttachment> (
@@ -267,16 +253,18 @@ SCREAMERAudioProcessorEditor::SCREAMERAudioProcessorEditor (SCREAMERAudioProcess
         "drive",
         gainSlider);
 
-    setupRotarySlider (mixSlider);
-    mixSlider.setRange (0.0, 100.0, 0.1);
-    mixSlider.setValue (100.0, juce::dontSendNotification);
-    mixSlider.setEnabled (false);
+    setupRotarySlider (mixSlider, mixKnobLookAndFeel);
     addAndMakeVisible (mixSlider);
+
+    mixAttachment = std::make_unique<SliderAttachment> (
+        audioProcessor.apvts,
+        "mix",
+        mixSlider);
 
     mixLabel.setText ("MIX", juce::dontSendNotification);
     mixLabel.setJustificationType (juce::Justification::centred);
     mixLabel.setColour (juce::Label::textColourId, labelTextColour);
-    mixLabel.setFont (juce::Font (juce::FontOptions().withHeight (12.0f).withStyle ("Bold")));
+    mixLabel.setFont (knobLabelFont (11.0f));
     addAndMakeVisible (mixLabel);
 
     constexpr int modeRadioGroupId = 1;
@@ -306,9 +294,19 @@ SCREAMERAudioProcessorEditor::~SCREAMERAudioProcessorEditor()
 {
     audioProcessor.apvts.removeParameterListener ("mode", this);
 
+    gainSlider.setLookAndFeel (nullptr);
+    mixSlider.setLookAndFeel (nullptr);
     warmButton.setLookAndFeel (nullptr);
     heavyButton.setLookAndFeel (nullptr);
     extremeButton.setLookAndFeel (nullptr);
+}
+
+void SCREAMERAudioProcessorEditor::loadUiAssets()
+{
+    backgroundImage = loadImageFromBinary (BinaryData::BACKGROUND_png, BinaryData::BACKGROUND_pngSize);
+    leftPanelImage  = loadImageFromBinary (BinaryData::LEFT_PANEL_png, BinaryData::LEFT_PANEL_pngSize);
+    buttonImage     = loadImageFromBinary (BinaryData::BUTTON_png, BinaryData::BUTTON_pngSize);
+    knobImage       = loadImageFromBinary (BinaryData::GAIN_png, BinaryData::GAIN_pngSize);
 }
 
 //==============================================================================
@@ -381,23 +379,20 @@ void SCREAMERAudioProcessorEditor::layoutRightPanel (juce::Rectangle<int> area)
 
 void SCREAMERAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (backgroundColour);
+    auto bounds = getLocalBounds().toFloat();
 
-    auto outer = getLocalBounds().toFloat().reduced (outerBorderThickness * 0.5f);
-    g.setColour (panelBorderColour);
-    g.drawRect (outer, outerBorderThickness);
+    if (backgroundImage.isValid())
+        g.drawImage (backgroundImage, bounds);
+    else
+        g.fillAll (juce::Colours::black);
 
-    if (! leftPanelBounds.isEmpty())
-    {
-        g.setColour (panelBorderColour);
-        g.drawRoundedRectangle (leftPanelBounds.toFloat().reduced (4.0f), 4.0f, 1.5f);
-    }
+    if (leftPanelImage.isValid() && ! leftPanelBounds.isEmpty())
+        g.drawImage (leftPanelImage, leftPanelBounds.toFloat());
 }
 
 void SCREAMERAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds();
-    bounds.reduce (juce::roundToInt (outerBorderThickness), juce::roundToInt (outerBorderThickness));
 
     const int leftWidth = juce::roundToInt ((float) bounds.getWidth() * leftPanelWidthRatio);
     auto leftPanel  = bounds.removeFromLeft (leftWidth);

@@ -34,6 +34,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout SCREAMERAudioProcessor::crea
         "Mode",
         juce::StringArray { "Warm", "Heavy", "Extreme" },
         1));
+    params.push_back (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "mix", 1 },
+        "Mix",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f),
+        1.0f));
 
     return { params.begin(), params.end() };
 }
@@ -166,6 +171,10 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     auto* driveParam = apvts.getRawParameterValue ("drive");
     const float drive = driveParam != nullptr ? driveParam->load() : 1.0f;
 
+    auto* mixParam = apvts.getRawParameterValue ("mix");
+    const float mix = mixParam != nullptr ? mixParam->load() : 1.0f;
+    const float dry = 1.0f - mix;
+
     const int numSamples = buffer.getNumSamples();
 
     for (int sample = 0; sample < numSamples; ++sample)
@@ -196,7 +205,8 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                 wet = clipped * 0.3f;
             }
 
-            channelData[sample] = input + fade * (wet - input);
+            const float mixed = input * dry + wet * mix;
+            channelData[sample] = input + fade * (mixed - input);
         }
     }
 }

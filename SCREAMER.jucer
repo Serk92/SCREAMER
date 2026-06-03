@@ -12,6 +12,16 @@
             file="Source/PluginEditor.cpp"/>
       <FILE id="BbVTMD" name="PluginEditor.h" compile="0" resource="0" file="Source/PluginEditor.h"/>
     </GROUP>
+    <GROUP id="resGrp01" name="Resources">
+      <FILE id="resBg01" name="BACKGROUND.png" compile="0" resource="1"
+            file="Resources/BACKGROUND.png"/>
+      <FILE id="resLp01" name="LEFT_PANEL.png" compile="0" resource="1"
+            file="Resources/LEFT_PANEL.png"/>
+      <FILE id="resBtn1" name="BUTTON.png" compile="0" resource="1"
+            file="Resources/BUTTON.png"/>
+      <FILE id="resGn01" name="GAIN.png" compile="0" resource="1"
+            file="Resources/GAIN.png"/>
+    </GROUP>
   </MAINGROUP>
   <MODULES>
     <MODULE id="juce_audio_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="1"/>

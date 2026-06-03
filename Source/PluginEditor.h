@@ -12,10 +12,31 @@
 #include "PluginProcessor.h"
 
 //==============================================================================
-/** Custom paint for WARM / HEAVY / EXTREME mode buttons. */
-class ScreamerModeButtonLookAndFeel : public juce::LookAndFeel_V4
+class ScreamerImageKnobLookAndFeel : public juce::LookAndFeel_V4
 {
 public:
+    void setKnobImage (const juce::Image& image) { knobImage = image; }
+
+    void drawRotarySlider (juce::Graphics& g,
+                           int x,
+                           int y,
+                           int width,
+                           int height,
+                           float sliderPosProportional,
+                           float rotaryStartAngle,
+                           float rotaryEndAngle,
+                           juce::Slider& slider) override;
+
+private:
+    juce::Image knobImage;
+};
+
+//==============================================================================
+class ScreamerImageButtonLookAndFeel : public juce::LookAndFeel_V4
+{
+public:
+    void setButtonImage (const juce::Image& image) { buttonImage = image; }
+
     void drawButtonBackground (juce::Graphics& g,
                                juce::Button& button,
                                const juce::Colour& backgroundColour,
@@ -26,6 +47,9 @@ public:
                          juce::TextButton& button,
                          bool shouldDrawButtonAsHighlighted,
                          bool shouldDrawButtonAsDown) override;
+
+private:
+    juce::Image buttonImage;
 };
 
 //==============================================================================
@@ -52,6 +76,7 @@ public:
 
 private:
     void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void loadUiAssets();
     void setModeIndex (int index);
     void updateModeButtonStates();
 
@@ -60,9 +85,16 @@ private:
 
     SCREAMERAudioProcessor& audioProcessor;
 
+    juce::Image backgroundImage;
+    juce::Image leftPanelImage;
+    juce::Image buttonImage;
+    juce::Image knobImage;
+
     juce::Rectangle<int> leftPanelBounds;
 
-    ScreamerModeButtonLookAndFeel modeButtonLookAndFeel;
+    ScreamerImageKnobLookAndFeel gainKnobLookAndFeel;
+    ScreamerImageKnobLookAndFeel mixKnobLookAndFeel;
+    ScreamerImageButtonLookAndFeel modeButtonLookAndFeel;
 
     juce::Slider gainSlider;
     juce::Label gainLabel;
@@ -77,6 +109,7 @@ private:
 
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<SliderAttachment> driveAttachment;
+    std::unique_ptr<SliderAttachment> mixAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SCREAMERAudioProcessorEditor)
 };
