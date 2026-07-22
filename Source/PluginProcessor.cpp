@@ -92,30 +92,72 @@ int SCREAMERAudioProcessor::getCurrentProgram()
 
 void SCREAMERAudioProcessor::setCurrentProgram (int index)
 {
+    juce::ignoreUnused (index);
 }
 
 const juce::String SCREAMERAudioProcessor::getProgramName (int index)
 {
+    juce::ignoreUnused (index);
     return {};
 }
 
 void SCREAMERAudioProcessor::changeProgramName (int index, const juce::String& newName)
 {
+    juce::ignoreUnused (index, newName);
+}
+
+void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
+{
+    const auto numChannels = static_cast<size_t> (juce::jmax (1, getTotalNumOutputChannels()));
+
+    if (oversampling == nullptr || preparedOversamplingChannels != numChannels)
+    {
+        oversampling = std::make_unique<juce::dsp::Oversampling<float>> (
+            numChannels,
+            oversamplingFactorOrder,
+            juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
+            true,
+            false);
+
+        preparedOversamplingChannels = numChannels;
+    }
+
+    oversampling->initProcessing (static_cast<size_t> (samplesPerBlock));
+    oversampling->reset();
+
+    oversamplingLatencySamples = static_cast<int> (oversampling->getLatencyInSamples());
+    setLatencySamples (oversamplingLatencySamples);
+
+    const juce::dsp::ProcessSpec dryDelaySpec {
+        getSampleRate(),
+        static_cast<juce::uint32> (samplesPerBlock),
+        static_cast<juce::uint32> (numChannels)
+    };
+
+    dryDelay.prepare (dryDelaySpec);
+    dryDelay.setMaximumDelayInSamples (oversamplingLatencySamples + samplesPerBlock + 1);
+    dryDelay.setDelay (static_cast<float> (oversamplingLatencySamples));
+    dryDelay.reset();
 }
 
 void SCREAMERAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    juce::ignoreUnused (samplesPerBlock);
-
     outputFade.reset (sampleRate, fadeInLengthSeconds);
     outputFade.setCurrentAndTargetValue (0.0f);
     outputFade.setTargetValue (1.0f);
     wasSuspendedLastBlock = false;
+
+    prepareOversampling (samplesPerBlock);
 }
 
 void SCREAMERAudioProcessor::releaseResources()
 {
     outputFade.setCurrentAndTargetValue (0.0f);
+
+    if (oversampling != nullptr)
+        oversampling->reset();
+
+    dryDelay.reset();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -139,15 +181,50 @@ bool SCREAMERAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts)
 }
 #endif
 
+void SCREAMERAudioProcessor::processNonlinear (juce::dsp::AudioBlock<float>& block,
+                                               float drive,
+                                               int mode) const
+{
+    for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
+    {
+        auto* samples = block.getChannelPointer (channel);
+
+        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        {
+            const float input = samples[sample];
+            float wet = input;
+
+            if (mode == 0) // Warm
+            {
+                const float preGain = drive * 3.0f;
+                wet = std::tanh (input * preGain) * 0.8f;
+            }
+            else if (mode == 1) // Heavy
+            {
+                const float preGain = drive * 10.0f;
+                wet = std::tanh (input * preGain) * 0.5f;
+            }
+            else if (mode == 2) // Extreme
+            {
+                const float preGain = drive * 25.0f;
+                const float clipped = juce::jlimit (-1.0f, 1.0f, input * preGain);
+                wet = clipped * 0.3f;
+            }
+
+            samples[sample] = wet;
+        }
+    }
+}
+
 void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                            juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
     juce::ignoreUnused (midiMessages);
 
-    auto totalNumInputChannels = getTotalNumInputChannels();
-    auto totalNumOutputChannels = getTotalNumOutputChannels();
-    
+    const auto totalNumInputChannels = getTotalNumInputChannels();
+    const auto totalNumOutputChannels = getTotalNumOutputChannels();
+
     int mode = 1; // default: Heavy
     if (auto* modeParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("mode")))
         mode = modeParam->getIndex();
@@ -168,14 +245,28 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         wasSuspendedLastBlock = false;
     }
 
+    if (oversampling == nullptr)
+        return;
+
     auto* driveParam = apvts.getRawParameterValue ("drive");
     const float drive = driveParam != nullptr ? driveParam->load() : 1.0f;
 
     auto* mixParam = apvts.getRawParameterValue ("mix");
     const float mix = mixParam != nullptr ? mixParam->load() : 1.0f;
-    const float dry = 1.0f - mix;
+    const float dryMix = 1.0f - mix;
 
     const int numSamples = buffer.getNumSamples();
+    const float dryDelayInSamples = static_cast<float> (oversamplingLatencySamples);
+
+    juce::AudioBuffer<float> dryInputBuffer;
+    dryInputBuffer.makeCopyOf (buffer, true);
+
+    {
+        juce::dsp::AudioBlock<float> wetBlock (buffer);
+        juce::dsp::AudioBlock<float> oversampledBlock = oversampling->processSamplesUp (wetBlock);
+        processNonlinear (oversampledBlock, drive, mode);
+        oversampling->processSamplesDown (wetBlock);
+    }
 
     for (int sample = 0; sample < numSamples; ++sample)
     {
@@ -183,34 +274,17 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
         for (int channel = 0; channel < totalNumInputChannels; ++channel)
         {
-            auto* channelData = buffer.getWritePointer (channel);
-            const float input = channelData[sample];
+            const float input = dryInputBuffer.getSample (channel, sample);
+            dryDelay.pushSample (channel, input);
 
-            float wet = input;
+            const float delayedDry = dryDelay.popSample (channel, dryDelayInSamples);
+            const float wet = buffer.getSample (channel, sample);
+            const float mixed = delayedDry * dryMix + wet * mix;
 
-            if (mode == 0) // Warm
-            {
-                const float preGain = drive * 3.0f;
-                wet = std::tanh (input * preGain) * 0.8f;
-            }
-            else if (mode == 1) // Heavy
-            {
-                const float preGain = drive * 10.0f;
-                wet = std::tanh (input * preGain) * 0.5f;
-            }
-            else if (mode == 2) // Extreme
-            {
-                const float preGain = drive * 25.0f;
-                const float clipped = juce::jlimit (-1.0f, 1.0f, input * preGain);
-                wet = clipped * 0.3f;
-            }
-
-            const float mixed = input * dry + wet * mix;
-            channelData[sample] = input + fade * (mixed - input);
+            buffer.setSample (channel, sample, input + fade * (mixed - input));
         }
     }
 }
-
 
 juce::AudioProcessorEditor* SCREAMERAudioProcessor::createEditor()
 {

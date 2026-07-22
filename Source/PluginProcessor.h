@@ -41,9 +41,18 @@ public:
 
 private:
     static constexpr double fadeInLengthSeconds = 0.03;
+    static constexpr size_t oversamplingFactorOrder = 2; // 2^2 = 4x
+
+    void prepareOversampling (int samplesPerBlock);
+    void processNonlinear (juce::dsp::AudioBlock<float>& block, float drive, int mode) const;
 
     juce::SmoothedValue<float> outputFade;
     bool wasSuspendedLastBlock = false;
+
+    std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay;
+    int oversamplingLatencySamples = 0;
+    size_t preparedOversamplingChannels = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SCREAMERAudioProcessor)
 };

@@ -11,30 +11,65 @@
 
 namespace
 {
-    constexpr int backgroundNativeWidth  = 693;
-    constexpr int backgroundNativeHeight = 374;
-    constexpr float leftPanelWidthRatio  = 172.0f / 693.0f;
+    // MAIN_PANEL.png is 1024 x 576 — layout coords match the image pixels.
+    constexpr int panelDesignWidth  = 1024;
+    constexpr int panelDesignHeight = 576;
 
-    constexpr float innerPadding         = 10.0f;
-    constexpr float modeButtonRowRatio   = 0.16f;
+    // Drive knob (matched to panel artwork)
+    constexpr int driveCentreX = 205;
+    constexpr int driveCentreY = 190;
+    constexpr int driveRadius  = 65;
 
-    constexpr float gainSectionHeightRatio = 0.54f;
-    constexpr float mixSectionHeightRatio  = 0.34f;
-    constexpr float sectionGapHeightRatio  = 0.08f;
-    constexpr float mixKnobScale           = 0.748f;
+    // Dry/Wet knob — 0 = dry (clean), 1 = wet (100% effect)
+    constexpr int mixCentreX = 203;
+    constexpr int mixCentreY = 378;
+    constexpr int mixRadius  = 57;
 
-    const juce::Colour labelTextColour    { 0xffd8d8d8 };
-    const juce::Colour displayGridColour  { 0xff2a2a2a };
-    const juce::Colour displayCurveColour { 0xffe8a020 };
-    const juce::Colour activeButtonText   { 0xffffb040 };
-    const juce::Colour inactiveButtonText { 0xff8a6030 };
+    // Mode buttons (1920-space coords scaled to 1024 x 576)
+    constexpr int modeButtonY = 102;
+    constexpr int modeButtonH = 52;
+
+    constexpr int warmButtonX    = 398;
+    constexpr int warmButtonW    = 122;
+    constexpr int heavyButtonX   = 570;
+    constexpr int heavyButtonW   = 121;
+    constexpr int extremeButtonX = 743;
+    constexpr int extremeButtonW = 121;
 
     juce::Image loadImageFromBinary (const char* data, int size)
     {
+        if (auto image = juce::ImageFileFormat::loadFrom (data, (size_t) size); image.isValid())
+            return image;
+
         return juce::ImageCache::getFromMemory (data, size);
     }
 
-    void setupRotarySlider (juce::Slider& slider, juce::LookAndFeel& lookAndFeel)
+    juce::Rectangle<int> scaledRect (juce::Rectangle<int> area, int x, int y, int w, int h)
+    {
+        const float scaleX = (float) area.getWidth()  / (float) panelDesignWidth;
+        const float scaleY = (float) area.getHeight() / (float) panelDesignHeight;
+
+        return juce::Rectangle<int> (juce::roundToInt (x * scaleX),
+                                     juce::roundToInt (y * scaleY),
+                                     juce::roundToInt (w * scaleX),
+                                     juce::roundToInt (h * scaleY));
+    }
+
+    juce::Rectangle<int> scaledKnobBounds (juce::Rectangle<int> area,
+                                           int centreX,
+                                           int centreY,
+                                           int radius)
+    {
+        const float scaleX = (float) area.getWidth()  / (float) panelDesignWidth;
+        const float scaleY = (float) area.getHeight() / (float) panelDesignHeight;
+        const int size = juce::roundToInt (2 * radius * scaleX);
+        const int x = juce::roundToInt (centreX * scaleX) - size / 2;
+        const int y = juce::roundToInt (centreY * scaleY) - size / 2;
+
+        return { x, y, size, size };
+    }
+
+    void setupInvisibleSlider (juce::Slider& slider, juce::LookAndFeel& lookAndFeel)
     {
         slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
@@ -44,178 +79,34 @@ namespace
         slider.setColour (juce::Slider::thumbColourId, juce::Colours::transparentBlack);
     }
 
-    void setupModeButton (juce::TextButton& button,
-                          int radioGroupId,
-                          juce::LookAndFeel& lookAndFeel)
+    void setupInvisibleButton (juce::TextButton& button, juce::LookAndFeel& lookAndFeel)
     {
-        button.setRadioGroupId (radioGroupId);
-        button.setClickingTogglesState (true);
+        button.setButtonText ({});
         button.setLookAndFeel (&lookAndFeel);
-        button.setColour (juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
-        button.setColour (juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
-    }
-
-    void layoutKnobColumn (juce::Rectangle<int> section,
-                           juce::Slider& knob,
-                           juce::Label& label,
-                           float knobDiameterScale)
-    {
-        const int labelHeight = 20;
-        auto labelBounds = section.removeFromBottom (labelHeight);
-        label.setBounds (labelBounds);
-
-        const int maxDiameter = juce::jmin (section.getWidth(), section.getHeight());
-        const int diameter = juce::jmax (32, juce::roundToInt ((float) maxDiameter * knobDiameterScale));
-        knob.setBounds (section.withSizeKeepingCentre (diameter, diameter));
-    }
-
-    juce::Font knobLabelFont (float height)
-    {
-        return juce::Font (juce::FontOptions().withHeight (height).withStyle ("Bold"));
     }
 }
 
 //==============================================================================
-void ScreamerImageKnobLookAndFeel::drawRotarySlider (juce::Graphics& g,
-                                                      int x,
-                                                      int y,
-                                                      int width,
-                                                      int height,
-                                                      float sliderPosProportional,
-                                                      float rotaryStartAngle,
-                                                      float rotaryEndAngle,
-                                                      juce::Slider&)
+void InvisibleControlLookAndFeel::drawRotarySlider (juce::Graphics&,
+                                                    int, int, int, int,
+                                                    float, float, float,
+                                                    juce::Slider&)
 {
-    if (! knobImage.isValid())
-        return;
-
-    auto bounds = juce::Rectangle<float> ((float) x, (float) y, (float) width, (float) height);
-    const auto centre = bounds.getCentre();
-
-    const float sliderAngle = rotaryStartAngle
-                              + sliderPosProportional * (rotaryEndAngle - rotaryStartAngle);
-
-    // GAIN.png indicator is at 12 o'clock; align it to the slider arc angle.
-    const float rotation = sliderAngle + juce::MathConstants<float>::halfPi;
-
-    g.saveState();
-    g.addTransform (juce::AffineTransform::rotation (rotation, centre.x, centre.y));
-
-    g.drawImage (knobImage,
-                 bounds.getX(), bounds.getY(),
-                 bounds.getWidth(), bounds.getHeight(),
-                 0, 0, knobImage.getWidth(), knobImage.getHeight());
-
-    g.restoreState();
 }
 
-//==============================================================================
-void ScreamerImageButtonLookAndFeel::drawButtonBackground (juce::Graphics& g,
-                                                            juce::Button& button,
-                                                            const juce::Colour&,
-                                                            bool,
-                                                            bool isDown)
+void InvisibleControlLookAndFeel::drawButtonBackground (juce::Graphics&,
+                                                        juce::Button&,
+                                                        const juce::Colour&,
+                                                        bool,
+                                                        bool)
 {
-    if (! buttonImage.isValid())
-        return;
-
-    auto bounds = button.getLocalBounds().toFloat();
-    const bool isOn = button.getToggleState();
-
-    g.setOpacity (isOn ? 1.0f : (isDown ? 0.75f : 0.55f));
-    g.drawImage (buttonImage, bounds);
-    g.setOpacity (1.0f);
-
-    if (isOn)
-    {
-        g.setColour (juce::Colour (0xffff9020).withAlpha (0.12f));
-        g.fillRoundedRectangle (bounds, 4.0f);
-    }
 }
 
-void ScreamerImageButtonLookAndFeel::drawButtonText (juce::Graphics& g,
-                                                      juce::TextButton& button,
-                                                      bool,
-                                                      bool)
+void InvisibleControlLookAndFeel::drawButtonText (juce::Graphics&,
+                                                  juce::TextButton&,
+                                                  bool,
+                                                  bool)
 {
-    const bool isOn = button.getToggleState();
-    g.setFont (juce::Font (juce::FontOptions().withHeight (13.0f).withStyle ("Bold")));
-    g.setColour (isOn ? activeButtonText : inactiveButtonText);
-    g.drawText (button.getButtonText(),
-                button.getLocalBounds(),
-                juce::Justification::centred,
-                false);
-}
-
-//==============================================================================
-void DisplayPanel::drawGrid (juce::Graphics& g, juce::Rectangle<float> plotArea) const
-{
-    g.setColour (displayGridColour);
-
-    constexpr int numVerticalLines   = 8;
-    constexpr int numHorizontalLines = 6;
-
-    for (int i = 0; i <= numVerticalLines; ++i)
-    {
-        const float x = plotArea.getX() + plotArea.getWidth() * (float) i / (float) numVerticalLines;
-        g.drawVerticalLine (juce::roundToInt (x), plotArea.getY(), plotArea.getBottom());
-    }
-
-    for (int i = 0; i <= numHorizontalLines; ++i)
-    {
-        const float y = plotArea.getY() + plotArea.getHeight() * (float) i / (float) numHorizontalLines;
-        g.drawHorizontalLine (juce::roundToInt (y), plotArea.getX(), plotArea.getRight());
-    }
-}
-
-void DisplayPanel::drawTransferCurve (juce::Graphics& g, juce::Rectangle<float> plotArea) const
-{
-    juce::Path curve;
-    const int numPoints = 128;
-
-    for (int i = 0; i < numPoints; ++i)
-    {
-        const float t = (float) i / (float) (numPoints - 1);
-        const float xNorm = t * 2.0f - 1.0f;
-        const float yNorm = std::tanh (xNorm * 2.5f);
-
-        const float x = plotArea.getX() + (t * plotArea.getWidth());
-        const float y = plotArea.getCentreY() - yNorm * plotArea.getHeight() * 0.42f;
-
-        if (i == 0)
-            curve.startNewSubPath (x, y);
-        else
-            curve.lineTo (x, y);
-    }
-
-    g.setColour (displayCurveColour);
-    g.strokePath (curve, juce::PathStrokeType (2.5f));
-
-    g.setColour (juce::Colours::grey.withAlpha (0.55f));
-    g.setFont (juce::Font (juce::FontOptions().withHeight (10.0f)));
-    const char* axisLabels[] = { "-24", "-12", "0", "+12", "+24" };
-
-    for (int i = 0; i < 5; ++i)
-    {
-        const float t = (float) i / 4.0f;
-        const float x = plotArea.getX() + t * plotArea.getWidth();
-        g.drawText (axisLabels[i],
-                    juce::Rectangle<float> (x - 18.0f, plotArea.getBottom() + 2.0f, 36.0f, 14.0f),
-                    juce::Justification::centred);
-    }
-}
-
-void DisplayPanel::paint (juce::Graphics& g)
-{
-    auto bounds = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0x88000000));
-    g.fillRoundedRectangle (bounds, 4.0f);
-
-    auto plotArea = bounds.reduced (14.0f, 12.0f);
-    plotArea.removeFromBottom (16.0f);
-
-    drawGrid (g, plotArea);
-    drawTransferCurve (g, plotArea);
 }
 
 //==============================================================================
@@ -224,36 +115,26 @@ SCREAMERAudioProcessorEditor::SCREAMERAudioProcessorEditor (SCREAMERAudioProcess
 {
     loadUiAssets();
 
-    gainKnobLookAndFeel.setKnobImage (knobImage);
-    mixKnobLookAndFeel.setKnobImage (knobImage);
-    modeButtonLookAndFeel.setButtonImage (buttonImage);
-
-    const int editorWidth  = backgroundImage.isValid() ? backgroundImage.getWidth()  : backgroundNativeWidth;
-    const int editorHeight = backgroundImage.isValid() ? backgroundImage.getHeight() : backgroundNativeHeight;
+    const int editorWidth  = mainPanelImage.isValid() ? mainPanelImage.getWidth()  : panelDesignWidth;
+    const int editorHeight = mainPanelImage.isValid() ? mainPanelImage.getHeight() : panelDesignHeight;
 
     setResizable (true, true);
-    setResizeLimits (juce::roundToInt ((float) editorWidth * 0.8f),
-                     juce::roundToInt ((float) editorHeight * 0.8f),
+    setResizeLimits (juce::roundToInt ((float) editorWidth * 0.75f),
+                     juce::roundToInt ((float) editorHeight * 0.75f),
                      editorWidth * 2,
                      editorHeight * 2);
     setSize (editorWidth, editorHeight);
 
-    setupRotarySlider (gainSlider, gainKnobLookAndFeel);
-    gainSlider.setRange (1.0, 20.0, 0.1);
-    addAndMakeVisible (gainSlider);
-
-    gainLabel.setText ("GAIN", juce::dontSendNotification);
-    gainLabel.setJustificationType (juce::Justification::centred);
-    gainLabel.setColour (juce::Label::textColourId, labelTextColour);
-    gainLabel.setFont (knobLabelFont (12.0f));
-    addAndMakeVisible (gainLabel);
+    setupInvisibleSlider (driveSlider, invisibleLookAndFeel);
+    driveSlider.setRange (1.0, 20.0, 0.1);
+    addAndMakeVisible (driveSlider);
 
     driveAttachment = std::make_unique<SliderAttachment> (
         audioProcessor.apvts,
         "drive",
-        gainSlider);
+        driveSlider);
 
-    setupRotarySlider (mixSlider, mixKnobLookAndFeel);
+    setupInvisibleSlider (mixSlider, invisibleLookAndFeel);
     addAndMakeVisible (mixSlider);
 
     mixAttachment = std::make_unique<SliderAttachment> (
@@ -261,40 +142,24 @@ SCREAMERAudioProcessorEditor::SCREAMERAudioProcessorEditor (SCREAMERAudioProcess
         "mix",
         mixSlider);
 
-    mixLabel.setText ("MIX", juce::dontSendNotification);
-    mixLabel.setJustificationType (juce::Justification::centred);
-    mixLabel.setColour (juce::Label::textColourId, labelTextColour);
-    mixLabel.setFont (knobLabelFont (11.0f));
-    addAndMakeVisible (mixLabel);
-
-    constexpr int modeRadioGroupId = 1;
-    setupModeButton (warmButton, modeRadioGroupId, modeButtonLookAndFeel);
-    setupModeButton (heavyButton, modeRadioGroupId, modeButtonLookAndFeel);
-    setupModeButton (extremeButton, modeRadioGroupId, modeButtonLookAndFeel);
-
-    warmButton.setButtonText ("WARM");
-    heavyButton.setButtonText ("HEAVY");
-    extremeButton.setButtonText ("EXTREME");
-
-    warmButton.onClick = [this] { setModeIndex (0); };
-    heavyButton.onClick = [this] { setModeIndex (1); };
-    extremeButton.onClick = [this] { setModeIndex (2); };
-
+    setupInvisibleButton (warmButton, invisibleLookAndFeel);
+    warmButton.onClick = [this] { setMode (0); };
     addAndMakeVisible (warmButton);
+
+    setupInvisibleButton (heavyButton, invisibleLookAndFeel);
+    heavyButton.onClick = [this] { setMode (1); };
     addAndMakeVisible (heavyButton);
+
+    setupInvisibleButton (extremeButton, invisibleLookAndFeel);
+    extremeButton.onClick = [this] { setMode (2); };
     addAndMakeVisible (extremeButton);
 
-    addAndMakeVisible (displayPanel);
-
-    audioProcessor.apvts.addParameterListener ("mode", this);
-    updateModeButtonStates();
+    layoutControls();
 }
 
 SCREAMERAudioProcessorEditor::~SCREAMERAudioProcessorEditor()
 {
-    audioProcessor.apvts.removeParameterListener ("mode", this);
-
-    gainSlider.setLookAndFeel (nullptr);
+    driveSlider.setLookAndFeel (nullptr);
     mixSlider.setLookAndFeel (nullptr);
     warmButton.setLookAndFeel (nullptr);
     heavyButton.setLookAndFeel (nullptr);
@@ -303,101 +168,39 @@ SCREAMERAudioProcessorEditor::~SCREAMERAudioProcessorEditor()
 
 void SCREAMERAudioProcessorEditor::loadUiAssets()
 {
-    backgroundImage = loadImageFromBinary (BinaryData::BACKGROUND_png, BinaryData::BACKGROUND_pngSize);
-    leftPanelImage  = loadImageFromBinary (BinaryData::LEFT_PANEL_png, BinaryData::LEFT_PANEL_pngSize);
-    buttonImage     = loadImageFromBinary (BinaryData::BUTTON_png, BinaryData::BUTTON_pngSize);
-    knobImage       = loadImageFromBinary (BinaryData::GAIN_png, BinaryData::GAIN_pngSize);
+    mainPanelImage = loadImageFromBinary (BinaryData::MAIN_PANEL_png, BinaryData::MAIN_PANEL_pngSize);
 }
 
-//==============================================================================
-void SCREAMERAudioProcessorEditor::parameterChanged (const juce::String& parameterID, float)
-{
-    if (parameterID == "mode")
-        updateModeButtonStates();
-}
-
-void SCREAMERAudioProcessorEditor::setModeIndex (int index)
+void SCREAMERAudioProcessorEditor::setMode (int index)
 {
     if (auto* modeParam = dynamic_cast<juce::AudioParameterChoice*> (audioProcessor.apvts.getParameter ("mode")))
         modeParam->setValueNotifyingHost (modeParam->convertTo0to1 (index));
 }
 
-void SCREAMERAudioProcessorEditor::updateModeButtonStates()
+void SCREAMERAudioProcessorEditor::layoutControls()
 {
-    int index = 1;
+    const auto area = getLocalBounds();
 
-    if (auto* modeParam = dynamic_cast<juce::AudioParameterChoice*> (audioProcessor.apvts.getParameter ("mode")))
-        index = modeParam->getIndex();
+    driveSlider.setBounds (scaledKnobBounds (area, driveCentreX, driveCentreY, driveRadius));
+    mixSlider.setBounds (scaledKnobBounds (area, mixCentreX, mixCentreY, mixRadius));
 
-    warmButton.setToggleState (index == 0, juce::dontSendNotification);
-    heavyButton.setToggleState (index == 1, juce::dontSendNotification);
-    extremeButton.setToggleState (index == 2, juce::dontSendNotification);
-
-    warmButton.repaint();
-    heavyButton.repaint();
-    extremeButton.repaint();
-}
-
-void SCREAMERAudioProcessorEditor::layoutLeftPanel (juce::Rectangle<int> area)
-{
-    leftPanelBounds = area;
-
-    area = area.reduced (juce::roundToInt (innerPadding));
-
-    const int totalHeight = area.getHeight();
-    const int sectionGap  = juce::jmax (12, juce::roundToInt (totalHeight * sectionGapHeightRatio));
-    const int gainHeight  = juce::roundToInt (totalHeight * gainSectionHeightRatio);
-    const int mixHeight   = totalHeight - gainHeight - sectionGap;
-
-    layoutKnobColumn (area.removeFromTop (gainHeight), gainSlider, gainLabel, 0.92f);
-
-    area.removeFromTop (sectionGap);
-
-    layoutKnobColumn (area.removeFromTop (mixHeight), mixSlider, mixLabel, mixKnobScale);
-}
-
-void SCREAMERAudioProcessorEditor::layoutRightPanel (juce::Rectangle<int> area)
-{
-    area = area.reduced (juce::roundToInt (innerPadding));
-
-    const int buttonRowHeight = juce::jmax (40, juce::roundToInt (area.getHeight() * modeButtonRowRatio));
-    auto buttonRow = area.removeFromTop (buttonRowHeight);
-
-    juce::FlexBox buttonFlex;
-    buttonFlex.flexDirection = juce::FlexBox::Direction::row;
-    buttonFlex.justifyContent = juce::FlexBox::JustifyContent::spaceBetween;
-
-    const float buttonMargin = 6.0f;
-    buttonFlex.items.add (juce::FlexItem (warmButton).withFlex (1.0f).withMargin (buttonMargin));
-    buttonFlex.items.add (juce::FlexItem (heavyButton).withFlex (1.0f).withMargin (buttonMargin));
-    buttonFlex.items.add (juce::FlexItem (extremeButton).withFlex (1.0f).withMargin (buttonMargin));
-    buttonFlex.performLayout (buttonRow);
-
-    area.removeFromTop (juce::roundToInt (innerPadding));
-    displayPanel.setBounds (area);
+    warmButton.setBounds (scaledRect (area, warmButtonX, modeButtonY, warmButtonW, modeButtonH));
+    heavyButton.setBounds (scaledRect (area, heavyButtonX, modeButtonY, heavyButtonW, modeButtonH));
+    extremeButton.setBounds (scaledRect (area, extremeButtonX, modeButtonY, extremeButtonW, modeButtonH));
 }
 
 void SCREAMERAudioProcessorEditor::paint (juce::Graphics& g)
 {
-    auto bounds = getLocalBounds().toFloat();
-
-    if (backgroundImage.isValid())
-        g.drawImage (backgroundImage, bounds);
-    else
+    if (! mainPanelImage.isValid())
+    {
         g.fillAll (juce::Colours::black);
+        return;
+    }
 
-    if (leftPanelImage.isValid() && ! leftPanelBounds.isEmpty())
-        g.drawImage (leftPanelImage, leftPanelBounds.toFloat());
+    g.drawImage (mainPanelImage, getLocalBounds().toFloat());
 }
 
 void SCREAMERAudioProcessorEditor::resized()
 {
-    auto bounds = getLocalBounds();
-
-    const int leftWidth = juce::roundToInt ((float) bounds.getWidth() * leftPanelWidthRatio);
-    auto leftPanel  = bounds.removeFromLeft (leftWidth);
-    auto rightPanel = bounds;
-
-    layoutLeftPanel (leftPanel);
-    layoutRightPanel (rightPanel);
+    layoutControls();
 }
