@@ -1,6 +1,42 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 
+namespace
+{
+    // Warm: soft asymmetric saturation — even harmonics, keeps pick attack readable.
+    float warmAsymmetricSaturation (float x, float drive)
+    {
+        const float gain = drive * 2.8f;
+        const float driven = x * gain;
+
+        if (driven >= 0.0f)
+            return std::tanh (driven * 0.72f);
+
+        return std::tanh (driven * 1.08f) * 0.94f;
+    }
+
+    // Heavy: two moderate soft-clipping stages — tighter but still defined mutes.
+    float heavyTwoStageSoftClip (float x, float drive)
+    {
+        const float stageOneGain = drive * 4.5f;
+        const float stageTwoGain = 0.65f + drive * 0.08f;
+
+        const float stageOne = std::tanh (x * stageOneGain);
+        return std::tanh (stageOne * stageTwoGain);
+    }
+
+    // Extreme: staged saturation plus controlled soft clip — compressed but not brick-walled.
+    float extremeStagedSaturation (float x, float drive)
+    {
+        const float gain = drive * 7.5f;
+        float s = x * gain;
+
+        s = s / (1.0f + std::abs (s));          // gentle rational soft saturate
+        s = std::tanh (s * 1.35f);              // add controlled upper harmonics
+        return s / (1.0f + 0.45f * s * s);      // final soft knee instead of hard clip
+    }
+}
+
 SCREAMERAudioProcessor::SCREAMERAudioProcessor()
 #ifndef JucePlugin_PreferredChannelConfigurations
      : AudioProcessor (BusesProperties()
@@ -140,6 +176,93 @@ void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
     dryDelay.reset();
 }
 
+void SCREAMERAudioProcessor::prepareProcessingFilters (double sampleRate, int samplesPerBlock)
+{
+    const auto numChannels = static_cast<size_t> (juce::jmax (1, getTotalNumOutputChannels()));
+    preparedFilterChannels = numChannels;
+
+    const juce::dsp::ProcessSpec spec {
+        sampleRate,
+        static_cast<juce::uint32> (samplesPerBlock),
+        static_cast<juce::uint32> (numChannels)
+    };
+
+    for (size_t channel = 0; channel < maxAudioChannels; ++channel)
+    {
+        channelFilters[channel].preHighPass.prepare (spec);
+        channelFilters[channel].postLowPass.prepare (spec);
+        channelFilters[channel].dcBlocker.prepare (spec);
+    }
+
+    dryInputBuffer.setSize (static_cast<int> (numChannels), samplesPerBlock, false, false, true);
+
+    preparedFilterMode = -1;
+
+    int mode = 1;
+    if (auto* modeParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter ("mode")))
+        mode = modeParam->getIndex();
+
+    updateProcessingFiltersForMode (mode, sampleRate);
+    resetProcessingFilters();
+}
+
+void SCREAMERAudioProcessor::updateProcessingFiltersForMode (int mode, double sampleRate)
+{
+    float preHighPassHz = 85.0f;
+    float postLowPassHz = 9500.0f;
+    modeOutputGain = 0.58f;
+
+    switch (mode)
+    {
+        case 0: // Warm
+            preHighPassHz = 38.0f;
+            postLowPassHz = 14000.0f;
+            modeOutputGain = 0.82f;
+            break;
+
+        case 1: // Heavy
+            preHighPassHz = 85.0f;
+            postLowPassHz = 9500.0f;
+            modeOutputGain = 0.58f;
+            break;
+
+        case 2: // Extreme
+            preHighPassHz = 120.0f;
+            postLowPassHz = 7500.0f;
+            modeOutputGain = 0.48f;
+            break;
+
+        default:
+            break;
+    }
+
+    const auto preHighPassCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, preHighPassHz, 0.707f);
+    const auto postLowPassCoeffs = juce::dsp::IIR::Coefficients<float>::makeLowPass (sampleRate, postLowPassHz, 0.707f);
+    const auto dcBlockerCoeffs   = juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, 8.0f, 0.707f);
+
+    for (size_t channel = 0; channel < preparedFilterChannels; ++channel)
+    {
+        channelFilters[channel].preHighPass.coefficients = preHighPassCoeffs;
+        channelFilters[channel].postLowPass.coefficients = postLowPassCoeffs;
+        channelFilters[channel].dcBlocker.coefficients   = dcBlockerCoeffs;
+        channelFilters[channel].preHighPass.reset();
+        channelFilters[channel].postLowPass.reset();
+        channelFilters[channel].dcBlocker.reset();
+    }
+
+    preparedFilterMode = mode;
+}
+
+void SCREAMERAudioProcessor::resetProcessingFilters()
+{
+    for (size_t channel = 0; channel < preparedFilterChannels; ++channel)
+    {
+        channelFilters[channel].preHighPass.reset();
+        channelFilters[channel].postLowPass.reset();
+        channelFilters[channel].dcBlocker.reset();
+    }
+}
+
 void SCREAMERAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     outputFade.reset (sampleRate, fadeInLengthSeconds);
@@ -148,6 +271,7 @@ void SCREAMERAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
     wasSuspendedLastBlock = false;
 
     prepareOversampling (samplesPerBlock);
+    prepareProcessingFilters (sampleRate, samplesPerBlock);
 }
 
 void SCREAMERAudioProcessor::releaseResources()
@@ -158,6 +282,7 @@ void SCREAMERAudioProcessor::releaseResources()
         oversampling->reset();
 
     dryDelay.reset();
+    resetProcessingFilters();
 }
 
 #ifndef JucePlugin_PreferredChannelConfigurations
@@ -192,26 +317,13 @@ void SCREAMERAudioProcessor::processNonlinear (juce::dsp::AudioBlock<float>& blo
         for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
         {
             const float input = samples[sample];
-            float wet = input;
 
-            if (mode == 0) // Warm
-            {
-                const float preGain = drive * 3.0f;
-                wet = std::tanh (input * preGain) * 0.8f;
-            }
-            else if (mode == 1) // Heavy
-            {
-                const float preGain = drive * 10.0f;
-                wet = std::tanh (input * preGain) * 0.5f;
-            }
-            else if (mode == 2) // Extreme
-            {
-                const float preGain = drive * 25.0f;
-                const float clipped = juce::jlimit (-1.0f, 1.0f, input * preGain);
-                wet = clipped * 0.3f;
-            }
-
-            samples[sample] = wet;
+            if (mode == 0)
+                samples[sample] = warmAsymmetricSaturation (input, drive);
+            else if (mode == 1)
+                samples[sample] = heavyTwoStageSoftClip (input, drive);
+            else
+                samples[sample] = extremeStagedSaturation (input, drive);
         }
     }
 }
@@ -248,6 +360,9 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (oversampling == nullptr)
         return;
 
+    if (mode != preparedFilterMode)
+        updateProcessingFiltersForMode (mode, getSampleRate());
+
     auto* driveParam = apvts.getRawParameterValue ("drive");
     const float drive = driveParam != nullptr ? driveParam->load() : 1.0f;
 
@@ -258,14 +373,36 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const int numSamples = buffer.getNumSamples();
     const float dryDelayInSamples = static_cast<float> (oversamplingLatencySamples);
 
-    juce::AudioBuffer<float> dryInputBuffer;
-    dryInputBuffer.makeCopyOf (buffer, true);
+    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+        dryInputBuffer.copyFrom (channel, 0, buffer, channel, 0, numSamples);
+
+    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    {
+        auto& filters = channelFilters[static_cast<size_t> (channel)];
+        auto* wetData = buffer.getWritePointer (channel);
+
+        for (int sample = 0; sample < numSamples; ++sample)
+            wetData[sample] = filters.preHighPass.processSample (wetData[sample]);
+    }
 
     {
         juce::dsp::AudioBlock<float> wetBlock (buffer);
         juce::dsp::AudioBlock<float> oversampledBlock = oversampling->processSamplesUp (wetBlock);
         processNonlinear (oversampledBlock, drive, mode);
         oversampling->processSamplesDown (wetBlock);
+    }
+
+    for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    {
+        auto& filters = channelFilters[static_cast<size_t> (channel)];
+        auto* wetData = buffer.getWritePointer (channel);
+
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            float wet = filters.postLowPass.processSample (wetData[sample]);
+            wet = filters.dcBlocker.processSample (wet);
+            wetData[sample] = wet * modeOutputGain;
+        }
     }
 
     for (int sample = 0; sample < numSamples; ++sample)
