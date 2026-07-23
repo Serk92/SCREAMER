@@ -41,8 +41,10 @@ public:
 
 private:
     static constexpr double fadeInLengthSeconds = 0.03;
+    static constexpr double modeCrossfadeLengthSeconds = 0.0175; // ~17.5 ms
     static constexpr size_t oversamplingFactorOrder = 2; // 2^2 = 4x
     static constexpr int maxAudioChannels = 2;
+    static constexpr int numModes = 3;
 
     struct ChannelProcessingFilters
     {
@@ -51,10 +53,27 @@ private:
         juce::dsp::IIR::Filter<float> dcBlocker;
     };
 
+    struct ModeFilterCoefficients
+    {
+        juce::dsp::IIR::Filter<float>::CoefficientsPtr preHighPass;
+        juce::dsp::IIR::Filter<float>::CoefficientsPtr postLowPass;
+        juce::dsp::IIR::Filter<float>::CoefficientsPtr dcBlocker;
+        float outputGain = 1.0f;
+    };
+
+    struct ModeFilterState
+    {
+        std::array<ChannelProcessingFilters, maxAudioChannels> channels {};
+    };
+
     void prepareOversampling (int samplesPerBlock);
-    void prepareProcessingFilters (double sampleRate, int samplesPerBlock);
-    void updateProcessingFiltersForMode (int mode, double sampleRate);
-    void resetProcessingFilters();
+    void prepareModeProcessing (double sampleRate, int samplesPerBlock);
+    void resetModeFilterStates();
+    void handleModeChange (int newMode);
+    void processWetPath (int mode,
+                         const juce::AudioBuffer<float>& input,
+                         juce::AudioBuffer<float>& output,
+                         float drive);
     void processNonlinear (juce::dsp::AudioBlock<float>& block, float drive, int mode) const;
 
     juce::SmoothedValue<float> outputFade;
@@ -62,12 +81,21 @@ private:
 
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::None> dryDelay;
-    std::array<ChannelProcessingFilters, maxAudioChannels> channelFilters {};
+
+    std::array<ModeFilterCoefficients, numModes> preparedModeCoefficients {};
+    std::array<ModeFilterState, numModes> modeFilterStates {};
+
     juce::AudioBuffer<float> dryInputBuffer;
+    juce::AudioBuffer<float> crossfadePathBufferA;
+    juce::AudioBuffer<float> crossfadePathBufferB;
 
     int oversamplingLatencySamples = 0;
-    int preparedFilterMode = -1;
-    float modeOutputGain = 1.0f;
+    int activeMode = 1;
+    int crossfadeFromMode = 1;
+    int crossfadeToMode = 1;
+    int modeCrossfadeSamplesRemaining = 0;
+    int modeCrossfadeTotalSamples = 0;
+    float modeCrossfadeGain = 0.0f;
     size_t preparedOversamplingChannels = 0;
     size_t preparedFilterChannels = 0;
 
