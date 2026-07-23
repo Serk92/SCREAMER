@@ -246,6 +246,9 @@ void SCREAMERAudioProcessor::prepareModeProcessing (double sampleRate, int sampl
     dryInputBuffer.setSize (numChannelsInt, samplesPerBlock, false, false, true);
     crossfadePathBufferA.setSize (numChannelsInt, samplesPerBlock, false, false, true);
     crossfadePathBufferB.setSize (numChannelsInt, samplesPerBlock, false, false, true);
+    smoothedDrivePerSample.setSize (1, samplesPerBlock, false, false, true);
+    smoothedMixPerSample.setSize (1, samplesPerBlock, false, false, true);
+    smoothedModeOutputGainPerSample.setSize (1, samplesPerBlock, false, false, true);
 
     modeCrossfadeTotalSamples = juce::jmax (1, juce::roundToInt (sampleRate * modeCrossfadeLengthSeconds));
     modeCrossfadeSamplesRemaining = 0;
@@ -303,6 +306,22 @@ void SCREAMERAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlo
 
     prepareOversampling (samplesPerBlock);
     prepareModeProcessing (sampleRate, samplesPerBlock);
+
+    const float initialDrive = apvts.getRawParameterValue ("drive") != nullptr
+                                   ? apvts.getRawParameterValue ("drive")->load()
+                                   : 1.0f;
+    const float initialMix = apvts.getRawParameterValue ("mix") != nullptr
+                                 ? apvts.getRawParameterValue ("mix")->load()
+                                 : 1.0f;
+    const float initialOutputGain = preparedModeCoefficients[static_cast<size_t> (activeMode)].outputGain;
+
+    smoothedDrive.reset (sampleRate, driveMixSmoothingSeconds);
+    smoothedMix.reset (sampleRate, driveMixSmoothingSeconds);
+    smoothedModeOutputGain.reset (sampleRate, modeOutputGainSmoothingSeconds);
+
+    smoothedDrive.setCurrentAndTargetValue (initialDrive);
+    smoothedMix.setCurrentAndTargetValue (initialMix);
+    smoothedModeOutputGain.setCurrentAndTargetValue (initialOutputGain);
 }
 
 void SCREAMERAudioProcessor::releaseResources()
@@ -341,35 +360,59 @@ bool SCREAMERAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts)
 #endif
 
 void SCREAMERAudioProcessor::processNonlinear (juce::dsp::AudioBlock<float>& block,
-                                               float drive,
+                                               const float* drivePerSample,
+                                               int numBaseSamples,
                                                int mode) const
 {
+    const size_t baseNumSamples = static_cast<size_t> (juce::jmax (0, numBaseSamples));
+    const size_t osNumSamples = block.getNumSamples();
+    const size_t osFactor = baseNumSamples > 0 ? osNumSamples / baseNumSamples : 1;
+
     for (size_t channel = 0; channel < block.getNumChannels(); ++channel)
     {
         auto* samples = block.getChannelPointer (channel);
 
-        for (size_t sample = 0; sample < block.getNumSamples(); ++sample)
+        for (size_t baseSample = 0; baseSample < baseNumSamples; ++baseSample)
         {
-            const float input = samples[sample];
+            const float drive = drivePerSample[baseSample];
 
-            if (mode == 0)
-                samples[sample] = warmAsymmetricSaturation (input, drive);
-            else if (mode == 1)
-                samples[sample] = heavyTwoStageSoftClip (input, drive);
-            else
-                samples[sample] = extremeStagedSaturation (input, drive);
+            for (size_t os = 0; os < osFactor; ++os)
+            {
+                const size_t osIndex = baseSample * osFactor + os;
+                const float input = samples[osIndex];
+
+                if (mode == 0)
+                    samples[osIndex] = warmAsymmetricSaturation (input, drive);
+                else if (mode == 1)
+                    samples[osIndex] = heavyTwoStageSoftClip (input, drive);
+                else
+                    samples[osIndex] = extremeStagedSaturation (input, drive);
+            }
         }
+    }
+}
+
+void SCREAMERAudioProcessor::fillParameterSmoothedBuffers (int numSamples)
+{
+    auto* driveValues = smoothedDrivePerSample.getWritePointer (0);
+    auto* mixValues = smoothedMixPerSample.getWritePointer (0);
+    auto* outputGainValues = smoothedModeOutputGainPerSample.getWritePointer (0);
+
+    for (int sample = 0; sample < numSamples; ++sample)
+    {
+        driveValues[sample] = smoothedDrive.getNextValue();
+        mixValues[sample] = smoothedMix.getNextValue();
+        outputGainValues[sample] = smoothedModeOutputGain.getNextValue();
     }
 }
 
 void SCREAMERAudioProcessor::processWetPath (int mode,
                                              const juce::AudioBuffer<float>& input,
                                              juce::AudioBuffer<float>& output,
-                                             float drive)
+                                             const float* drivePerSample)
 {
     const int numSamples = input.getNumSamples();
     const auto numChannels = static_cast<size_t> (input.getNumChannels());
-    const float outputGain = preparedModeCoefficients[static_cast<size_t> (mode)].outputGain;
 
     for (size_t channel = 0; channel < numChannels; ++channel)
     {
@@ -392,7 +435,7 @@ void SCREAMERAudioProcessor::processWetPath (int mode,
     {
         juce::dsp::AudioBlock<float> wetBlock (output);
         juce::dsp::AudioBlock<float> oversampledBlock = oversampling->processSamplesUp (wetBlock);
-        processNonlinear (oversampledBlock, drive, mode);
+        processNonlinear (oversampledBlock, drivePerSample, numSamples, mode);
         oversampling->processSamplesDown (wetBlock);
     }
 
@@ -405,7 +448,7 @@ void SCREAMERAudioProcessor::processWetPath (int mode,
         {
             float wet = filters.postLowPass.processSample (wetData[sample]);
             wet = filters.dcBlocker.processSample (wet);
-            wetData[sample] = wet * outputGain;
+            wetData[sample] = wet;
         }
     }
 }
@@ -445,32 +488,53 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     handleModeChange (requestedMode);
 
     auto* driveParam = apvts.getRawParameterValue ("drive");
-    const float drive = driveParam != nullptr ? driveParam->load() : 1.0f;
+    const float driveTarget = driveParam != nullptr ? driveParam->load() : 1.0f;
 
     auto* mixParam = apvts.getRawParameterValue ("mix");
-    const float mix = mixParam != nullptr ? mixParam->load() : 1.0f;
-    const float dryMix = 1.0f - mix;
+    const float mixTarget = mixParam != nullptr ? mixParam->load() : 1.0f;
+
+    smoothedDrive.setTargetValue (driveTarget);
+    smoothedMix.setTargetValue (mixTarget);
+
+    float outputGainTarget = preparedModeCoefficients[static_cast<size_t> (activeMode)].outputGain;
+
+    if (modeCrossfadeSamplesRemaining > 0)
+    {
+        const float fromGain = preparedModeCoefficients[static_cast<size_t> (crossfadeFromMode)].outputGain;
+        const float toGain = preparedModeCoefficients[static_cast<size_t> (crossfadeToMode)].outputGain;
+        outputGainTarget = fromGain + modeCrossfadeGain * (toGain - fromGain);
+    }
+
+    smoothedModeOutputGain.setTargetValue (outputGainTarget);
 
     const int numSamples = buffer.getNumSamples();
+
+    fillParameterSmoothedBuffers (numSamples);
+
+    const float* drivePerSample = smoothedDrivePerSample.getReadPointer (0);
+    const float* mixPerSample = smoothedMixPerSample.getReadPointer (0);
+    const float* modeOutputGainPerSample = smoothedModeOutputGainPerSample.getReadPointer (0);
 
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
         dryInputBuffer.copyFrom (channel, 0, buffer, channel, 0, numSamples);
 
     if (modeCrossfadeSamplesRemaining > 0)
     {
-        processWetPath (crossfadeFromMode, dryInputBuffer, crossfadePathBufferA, drive);
-        processWetPath (crossfadeToMode, dryInputBuffer, crossfadePathBufferB, drive);
+        processWetPath (crossfadeFromMode, dryInputBuffer, crossfadePathBufferA, drivePerSample);
+        processWetPath (crossfadeToMode, dryInputBuffer, crossfadePathBufferB, drivePerSample);
 
         for (int sample = 0; sample < numSamples; ++sample)
         {
             const float toGain = modeCrossfadeGain;
             const float fromGain = 1.0f - toGain;
+            const float outputGain = modeOutputGainPerSample[sample];
 
             for (int channel = 0; channel < totalNumInputChannels; ++channel)
             {
                 const float wetFrom = crossfadePathBufferA.getSample (channel, sample);
                 const float wetTo = crossfadePathBufferB.getSample (channel, sample);
-                buffer.setSample (channel, sample, wetFrom * fromGain + wetTo * toGain);
+                const float wet = (wetFrom * fromGain + wetTo * toGain) * outputGain;
+                buffer.setSample (channel, sample, wet);
             }
 
             if (modeCrossfadeSamplesRemaining > 0)
@@ -489,12 +553,25 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
     else
     {
-        processWetPath (activeMode, dryInputBuffer, buffer, drive);
+        processWetPath (activeMode, dryInputBuffer, buffer, drivePerSample);
+
+        for (int sample = 0; sample < numSamples; ++sample)
+        {
+            const float outputGain = modeOutputGainPerSample[sample];
+
+            for (int channel = 0; channel < totalNumInputChannels; ++channel)
+            {
+                const float wet = buffer.getSample (channel, sample);
+                buffer.setSample (channel, sample, wet * outputGain);
+            }
+        }
     }
 
     for (int sample = 0; sample < numSamples; ++sample)
     {
         const float fade = outputFade.getNextValue();
+        const float mix = mixPerSample[sample];
+        const float dryMix = 1.0f - mix;
 
         for (int channel = 0; channel < totalNumInputChannels; ++channel)
         {

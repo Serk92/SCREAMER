@@ -41,7 +41,9 @@ public:
 
 private:
     static constexpr double fadeInLengthSeconds = 0.03;
-    static constexpr double modeCrossfadeLengthSeconds = 0.0175; // ~17.5 ms
+    static constexpr double driveMixSmoothingSeconds = 0.03;
+    static constexpr double modeOutputGainSmoothingSeconds = 0.0175;
+    static constexpr double modeCrossfadeLengthSeconds = 0.0175;
     static constexpr size_t oversamplingFactorOrder = 2; // 2^2 = 4x
     static constexpr int maxAudioChannels = 2;
     static constexpr int numModes = 3;
@@ -73,10 +75,17 @@ private:
     void processWetPath (int mode,
                          const juce::AudioBuffer<float>& input,
                          juce::AudioBuffer<float>& output,
-                         float drive);
-    void processNonlinear (juce::dsp::AudioBlock<float>& block, float drive, int mode) const;
+                         const float* drivePerSample);
+    void fillParameterSmoothedBuffers (int numSamples);
+    void processNonlinear (juce::dsp::AudioBlock<float>& block,
+                           const float* drivePerSample,
+                           int numBaseSamples,
+                           int mode) const;
 
     juce::SmoothedValue<float> outputFade;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedDrive;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedMix;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> smoothedModeOutputGain;
     bool wasSuspendedLastBlock = false;
 
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampling;
@@ -88,6 +97,9 @@ private:
     juce::AudioBuffer<float> dryInputBuffer;
     juce::AudioBuffer<float> crossfadePathBufferA;
     juce::AudioBuffer<float> crossfadePathBufferB;
+    juce::AudioBuffer<float> smoothedDrivePerSample;
+    juce::AudioBuffer<float> smoothedMixPerSample;
+    juce::AudioBuffer<float> smoothedModeOutputGainPerSample;
 
     int oversamplingLatencySamples = 0;
     int activeMode = 1;
