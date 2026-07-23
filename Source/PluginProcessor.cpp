@@ -153,7 +153,7 @@ void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
             oversamplingFactorOrder,
             juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
             true,
-            false);
+            true);
 
         preparedOversamplingChannels = numChannels;
     }
@@ -161,7 +161,7 @@ void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
     oversampling->initProcessing (static_cast<size_t> (samplesPerBlock));
     oversampling->reset();
 
-    oversamplingLatencySamples = static_cast<int> (oversampling->getLatencyInSamples());
+    oversamplingLatencySamples = juce::roundToInt (oversampling->getLatencyInSamples());
     setLatencySamples (oversamplingLatencySamples);
 
     const juce::dsp::ProcessSpec dryDelaySpec {
@@ -170,8 +170,10 @@ void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
         static_cast<juce::uint32> (numChannels)
     };
 
+    const int dryDelayCapacity = oversamplingLatencySamples + samplesPerBlock + 8;
+
     dryDelay.prepare (dryDelaySpec);
-    dryDelay.setMaximumDelayInSamples (oversamplingLatencySamples + samplesPerBlock + 1);
+    dryDelay.setMaximumDelayInSamples (dryDelayCapacity);
     dryDelay.setDelay (static_cast<float> (oversamplingLatencySamples));
     dryDelay.reset();
 }
@@ -371,7 +373,6 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const float dryMix = 1.0f - mix;
 
     const int numSamples = buffer.getNumSamples();
-    const float dryDelayInSamples = static_cast<float> (oversamplingLatencySamples);
 
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
         dryInputBuffer.copyFrom (channel, 0, buffer, channel, 0, numSamples);
@@ -414,7 +415,7 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
             const float input = dryInputBuffer.getSample (channel, sample);
             dryDelay.pushSample (channel, input);
 
-            const float delayedDry = dryDelay.popSample (channel, dryDelayInSamples);
+            const float delayedDry = dryDelay.popSample (channel);
             const float wet = buffer.getSample (channel, sample);
             const float mixed = delayedDry * dryMix + wet * mix;
 
