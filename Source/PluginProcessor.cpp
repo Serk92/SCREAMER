@@ -157,7 +157,7 @@ void SCREAMERAudioProcessor::changeProgramName (int index, const juce::String& n
 
 void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
 {
-    const auto numChannels = static_cast<size_t> (juce::jmax (1, getTotalNumOutputChannels()));
+    const auto numChannels = juce::jmax (size_t { 1 }, getActiveChannelCount());
 
     if (oversampling == nullptr || preparedOversamplingChannels != numChannels)
     {
@@ -179,7 +179,7 @@ void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
 
     const juce::dsp::ProcessSpec dryDelaySpec {
         getSampleRate(),
-        static_cast<juce::uint32> (samplesPerBlock),
+        static_cast<juce::uint32> (juce::jmax (0, samplesPerBlock)),
         static_cast<juce::uint32> (numChannels)
     };
 
@@ -193,13 +193,15 @@ void SCREAMERAudioProcessor::prepareOversampling (int samplesPerBlock)
 
 void SCREAMERAudioProcessor::prepareModeProcessing (double sampleRate, int samplesPerBlock)
 {
-    const auto numChannels = static_cast<size_t> (juce::jmax (1, getTotalNumOutputChannels()));
+    const auto numChannels = getActiveChannelCount();
     preparedFilterChannels = numChannels;
 
-    const juce::dsp::ProcessSpec spec {
+    jassert (numChannels <= static_cast<size_t> (maxAudioChannels));
+
+    const juce::dsp::ProcessSpec monoFilterSpec {
         sampleRate,
-        static_cast<juce::uint32> (samplesPerBlock),
-        static_cast<juce::uint32> (numChannels)
+        static_cast<juce::uint32> (juce::jmax (0, samplesPerBlock)),
+        1
     };
 
     const auto dcBlockerCoeffs = juce::dsp::IIR::Coefficients<float>::makeHighPass (
@@ -228,27 +230,27 @@ void SCREAMERAudioProcessor::prepareModeProcessing (double sampleRate, int sampl
         {
             auto& filters = modeFilterStates[static_cast<size_t> (mode)].channels[channel];
 
-            filters.preHighPass.prepare (spec);
-            filters.postLowPass.prepare (spec);
-            filters.dcBlocker.prepare (spec);
+            filters.preHighPass.prepare (monoFilterSpec);
+            filters.postLowPass.prepare (monoFilterSpec);
+            filters.dcBlocker.prepare (monoFilterSpec);
 
             filters.preHighPass.coefficients = coeffs.preHighPass;
             filters.postLowPass.coefficients = coeffs.postLowPass;
             filters.dcBlocker.coefficients   = coeffs.dcBlocker;
-            filters.preHighPass.reset();
-            filters.postLowPass.reset();
-            filters.dcBlocker.reset();
         }
     }
 
-    const int numChannelsInt = static_cast<int> (numChannels);
+    resetModeFilterStates();
 
-    dryInputBuffer.setSize (numChannelsInt, samplesPerBlock, false, false, true);
-    crossfadePathBufferA.setSize (numChannelsInt, samplesPerBlock, false, false, true);
-    crossfadePathBufferB.setSize (numChannelsInt, samplesPerBlock, false, false, true);
-    smoothedDrivePerSample.setSize (1, samplesPerBlock, false, false, true);
-    smoothedMixPerSample.setSize (1, samplesPerBlock, false, false, true);
-    smoothedModeOutputGainPerSample.setSize (1, samplesPerBlock, false, false, true);
+    const int numChannelsInt = static_cast<int> (numChannels);
+    const int blockSize = juce::jmax (0, samplesPerBlock);
+
+    dryInputBuffer.setSize (numChannelsInt, blockSize, false, false, true);
+    crossfadePathBufferA.setSize (numChannelsInt, blockSize, false, false, true);
+    crossfadePathBufferB.setSize (numChannelsInt, blockSize, false, false, true);
+    smoothedDrivePerSample.setSize (1, blockSize, false, false, true);
+    smoothedMixPerSample.setSize (1, blockSize, false, false, true);
+    smoothedModeOutputGainPerSample.setSize (1, blockSize, false, false, true);
 
     modeCrossfadeTotalSamples = juce::jmax (1, juce::roundToInt (sampleRate * modeCrossfadeLengthSeconds));
     modeCrossfadeSamplesRemaining = 0;
@@ -265,12 +267,23 @@ void SCREAMERAudioProcessor::prepareModeProcessing (double sampleRate, int sampl
 void SCREAMERAudioProcessor::resetModeFilterStates()
 {
     for (auto& modeState : modeFilterStates)
-        for (size_t channel = 0; channel < preparedFilterChannels; ++channel)
+        for (size_t channel = 0; channel < static_cast<size_t> (maxAudioChannels); ++channel)
         {
             modeState.channels[channel].preHighPass.reset();
             modeState.channels[channel].postLowPass.reset();
             modeState.channels[channel].dcBlocker.reset();
         }
+}
+
+size_t SCREAMERAudioProcessor::getActiveChannelCount() const
+{
+    const int outputChannels = getTotalNumOutputChannels();
+    jassert (outputChannels <= maxAudioChannels);
+
+    if (outputChannels <= 0)
+        return 0;
+
+    return static_cast<size_t> (juce::jmin (outputChannels, maxAudioChannels));
 }
 
 void SCREAMERAudioProcessor::handleModeChange (int newMode)
@@ -394,6 +407,9 @@ void SCREAMERAudioProcessor::processNonlinear (juce::dsp::AudioBlock<float>& blo
 
 void SCREAMERAudioProcessor::fillParameterSmoothedBuffers (int numSamples)
 {
+    if (numSamples <= 0)
+        return;
+
     auto* driveValues = smoothedDrivePerSample.getWritePointer (0);
     auto* mixValues = smoothedMixPerSample.getWritePointer (0);
     auto* outputGainValues = smoothedModeOutputGainPerSample.getWritePointer (0);
@@ -412,7 +428,13 @@ void SCREAMERAudioProcessor::processWetPath (int mode,
                                              const float* drivePerSample)
 {
     const int numSamples = input.getNumSamples();
-    const auto numChannels = static_cast<size_t> (input.getNumChannels());
+    if (numSamples <= 0 || preparedFilterChannels == 0)
+        return;
+
+    const auto numChannels = juce::jmin (static_cast<size_t> (input.getNumChannels()),
+                                         preparedFilterChannels);
+
+    jassert (numChannels <= static_cast<size_t> (maxAudioChannels));
 
     for (size_t channel = 0; channel < numChannels; ++channel)
     {
@@ -482,7 +504,7 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         wasSuspendedLastBlock = false;
     }
 
-    if (oversampling == nullptr)
+    if (oversampling == nullptr || preparedFilterChannels == 0)
         return;
 
     handleModeChange (requestedMode);
@@ -508,6 +530,8 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     smoothedModeOutputGain.setTargetValue (outputGainTarget);
 
     const int numSamples = buffer.getNumSamples();
+    if (numSamples <= 0)
+        return;
 
     fillParameterSmoothedBuffers (numSamples);
 
@@ -516,7 +540,10 @@ void SCREAMERAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     const float* modeOutputGainPerSample = smoothedModeOutputGainPerSample.getReadPointer (0);
 
     for (int channel = 0; channel < totalNumInputChannels; ++channel)
+    {
+        jassert (static_cast<size_t> (channel) < preparedFilterChannels);
         dryInputBuffer.copyFrom (channel, 0, buffer, channel, 0, numSamples);
+    }
 
     if (modeCrossfadeSamplesRemaining > 0)
     {

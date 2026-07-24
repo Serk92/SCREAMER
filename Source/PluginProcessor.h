@@ -71,6 +71,7 @@ private:
     void prepareOversampling (int samplesPerBlock);
     void prepareModeProcessing (double sampleRate, int samplesPerBlock);
     void resetModeFilterStates();
+    size_t getActiveChannelCount() const;
     void handleModeChange (int newMode);
     void processWetPath (int mode,
                          const juce::AudioBuffer<float>& input,
